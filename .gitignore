@@ -1,0 +1,5 @@
+/target
+*.deb
+*.AppImage
+*.lock
+prd.*
