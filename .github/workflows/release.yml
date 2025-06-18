@@ -16,6 +16,21 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
+    - name: Get version
+      id: get_version
+      run: |
+        if [ "${{ github.event_name }}" = "release" ]; then
+          VERSION="${{ github.event.release.tag_name }}"
+        elif [ "${{ github.ref_type }}" = "tag" ]; then
+          VERSION="${{ github.ref_name }}"
+        else
+          VERSION="$(grep '^version' Cargo.toml | sed 's/version = "\(.*\)"/\1/')"
+        fi
+        # Remove 'v' prefix if present
+        VERSION=${VERSION#v}
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "Version: $VERSION"
+
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
 
@@ -56,7 +71,7 @@ jobs:
       run: |
         cat > package/DEBIAN/control << EOF
         Package: zfetch
-        Version: ${{ github.event.release.tag_name }}
+        Version: ${{ steps.get_version.outputs.version }}
         Section: utils
         Priority: optional
         Architecture: amd64
@@ -76,45 +91,13 @@ jobs:
         Homepage: https://github.com/${{ github.repository }}
         EOF
 
-    - name: Create copyright file
-      run: |
-        cat > package/usr/share/doc/zfetch/copyright << EOF
-        Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
-        Upstream-Name: zfetch
-        Upstream-Contact: zfetch contributors
-        Source: https://github.com/${{ github.repository }}
-
-        Files: *
-        Copyright: 2025 zfetch contributors
-        License: MIT
-
-        License: MIT
-         Permission is hereby granted, free of charge, to any person obtaining a copy
-         of this software and associated documentation files (the "Software"), to deal
-         in the Software without restriction, including without limitation the rights
-         to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-         copies of the Software, and to permit persons to whom the Software is
-         furnished to do so, subject to the following conditions:
-         .
-         The above copyright notice and this permission notice shall be included in all
-         copies or substantial portions of the Software.
-         .
-         THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-         IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-         FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-         AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-         LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-         OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-         SOFTWARE.
-        EOF
-
     - name: Create changelog
       run: |
         cat > package/usr/share/doc/zfetch/changelog << EOF
-        zfetch (${{ github.event.release.tag_name }}) stable; urgency=medium
+        zfetch (${{ steps.get_version.outputs.version }}) stable; urgency=medium
 
-          * Release ${{ github.event.release.tag_name }}
-          * See https://github.com/${{ github.repository }}/releases/tag/${{ github.event.release.tag_name }} for details
+          * Release ${{ steps.get_version.outputs.version }}
+          * See https://github.com/${{ github.repository }}/releases/tag/v${{ steps.get_version.outputs.version }} for details
 
          -- zfetch contributors <zfetch@example.com>  $(date -R)
         EOF
@@ -123,7 +106,7 @@ jobs:
     - name: Create man page
       run: |
         cat > package/usr/share/man/man1/zfetch.1 << 'EOF'
-        .TH ZFETCH 1 "$(date +'%B %Y')" "zfetch ${{ github.event.release.tag_name }}" "User Commands"
+        .TH ZFETCH 1 "$(date +'%B %Y')" "zfetch ${{ steps.get_version.outputs.version }}" "User Commands"
         .SH NAME
         zfetch \- system information fetcher for Linux
         .SH SYNOPSIS
@@ -174,7 +157,39 @@ jobs:
 
     - name: Build .deb package
       run: |
-        dpkg-deb --build package zfetch_${{ github.event.release.tag_name }}_amd64.deb
+        dpkg-deb --build package zfetch_${{ steps.get_version.outputs.version }}_amd64.deb
+
+    - name: Download AppImage tools
+      run: |
+        wget -O linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+        chmod +x linuxdeploy
+
+    - name: Create AppDir structure
+      run: |
+        mkdir -p AppDir/usr/bin
+        mkdir -p AppDir/usr/share/applications
+        mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
+
+    - name: Copy binary to AppDir
+      run: |
+        cp target/release/zfetch AppDir/usr/bin/
+
+    - name: Create desktop file
+      run: |
+        cat > AppDir/usr/share/applications/zfetch.desktop << EOF
+        [Desktop Entry]
+        Name=zfetch
+        Comment=System information fetcher for Linux
+        Exec=zfetch
+        Icon=zfetch
+        Type=Application
+        Categories=System;
+        Terminal=true
+        EOF
+
+    - name: Build .deb package
+      run: |
+        dpkg-deb --build package zfetch_${{ steps.get_version.outputs.version }}_amd64.deb
 
     - name: Download AppImage tools
       run: |
@@ -215,34 +230,38 @@ jobs:
     - name: Create AppImage
       run: |
         ./linuxdeploy --appdir AppDir --output appimage
-        mv zfetch*.AppImage zfetch-${{ github.event.release.tag_name }}-x86_64.AppImage
-
-    - name: Upload .deb package
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ github.event.release.upload_url }}
-        asset_path: ./zfetch_${{ github.event.release.tag_name }}_amd64.deb
-        asset_name: zfetch_${{ github.event.release.tag_name }}_amd64.deb
-        asset_content_type: application/vnd.debian.binary-package
-
-    - name: Upload AppImage
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ github.event.release.upload_url }}
-        asset_path: ./zfetch-${{ github.event.release.tag_name }}-x86_64.AppImage
-        asset_name: zfetch-${{ github.event.release.tag_name }}-x86_64.AppImage
-        asset_content_type: application/octet-stream
+        mv zfetch*.AppImage zfetch-${{ steps.get_version.outputs.version }}-x86_64.AppImage
 
     - name: Generate checksums
       run: |
-        sha256sum zfetch_${{ github.event.release.tag_name }}_amd64.deb > checksums.txt
-        sha256sum zfetch-${{ github.event.release.tag_name }}-x86_64.AppImage >> checksums.txt
+        sha256sum zfetch_${{ steps.get_version.outputs.version }}_amd64.deb > checksums.txt
+        sha256sum zfetch-${{ steps.get_version.outputs.version }}-x86_64.AppImage >> checksums.txt
+
+    # Upload artifacts (only for releases)
+    - name: Upload .deb package
+      if: github.event_name == 'release'
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ github.event.release.upload_url }}
+        asset_path: ./zfetch_${{ steps.get_version.outputs.version }}_amd64.deb
+        asset_name: zfetch_${{ steps.get_version.outputs.version }}_amd64.deb
+        asset_content_type: application/vnd.debian.binary-package
+
+    - name: Upload AppImage
+      if: github.event_name == 'release'
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ github.event.release.upload_url }}
+        asset_path: ./zfetch-${{ steps.get_version.outputs.version }}-x86_64.AppImage
+        asset_name: zfetch-${{ steps.get_version.outputs.version }}-x86_64.AppImage
+        asset_content_type: application/octet-stream
 
     - name: Upload checksums
+      if: github.event_name == 'release'
       uses: actions/upload-release-asset@v1
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -251,3 +270,14 @@ jobs:
         asset_path: ./checksums.txt
         asset_name: checksums.txt
         asset_content_type: text/plain
+
+    # Upload artifacts for non-release builds
+    - name: Upload build artifacts
+      if: github.event_name != 'release'
+      uses: actions/upload-artifact@v3
+      with:
+        name: zfetch-packages-${{ steps.get_version.outputs.version }}
+        path: |
+          zfetch_${{ steps.get_version.outputs.version }}_amd64.deb
+          zfetch-${{ steps.get_version.outputs.version }}-x86_64.AppImage
+          checksums.txt
